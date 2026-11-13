@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ぶっぽうまるのページ</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ぶっぽうまる">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#1c7f93">
+<meta name="robots" content="noindex, nofollow">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<style>
+  :root{--bg:#fbf6e9;--ink:#22313a;--teal:#1c7f93}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:"Hiragino Maru Gothic ProN","Hiragino Sans",sans-serif}
+  .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box}
+  .box{max-width:520px;width:100%;background:#fff;border-radius:22px;box-shadow:0 8px 28px rgba(0,0,0,.08);padding:26px 24px;text-align:center}
+  .box img{width:120px;height:120px;border-radius:24px}
+  h1{font-size:22px;margin:12px 0 6px}
+  p{line-height:1.7;margin:8px 0;font-weight:700}
+  .bar{height:10px;background:#eee4cc;border-radius:999px;overflow:hidden;margin:14px 0 4px}
+  .bar i{display:block;height:100%;width:0;background:var(--teal);transition:width .3s}
+  .small{font-size:13px;color:#5b6b73;font-weight:600}
+  button{font:inherit;font-weight:800;border:0;border-radius:14px;padding:12px 20px;background:var(--teal);color:#fff;margin-top:10px}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="box" id="box">
+  <img src="icon-192.png" alt="ぶっぽうまる">
+  <h1>ぶっぽうまるのページ</h1>
+  <p id="msg">ひらいています…</p>
+  <div class="bar"><i id="barI"></i></div>
+  <div class="small" id="sub"></div>
+</div></div>
+<script>
+/* ============================================================
+   ぶっぽうまるのページ　オフライン版（ホーム画面アプリ）
+   ・下の EXEC に、ぶっぽうまるのページのURL（…/exec）を入れる（先生が1回だけ）
+   ・はじめての1回は、インターネットにつながっている所でひらく → 画面のぜんぶを iPad に保存する
+   ・次からは、ネットがなくても iPad に保存した画面でひらく。つながったときに新しい画面があれば、そっと入れかえる
+   ・やったこと（記録）は iPad の「送信待ち」に保存して、つながったら送る（同じ記録は2回記録されない）
+   ・子どもの記録はここ（GitHub Pages など）には送られない。記録はいつも 先生のGoogleスプレッドシートへ直接
+   ============================================================ */
+var EXEC = 'https://script.google.com/macros/s/AKfycbySqUsUaWPXstJ4EqglT-3Qr6o6F_cJgBKSlRTBoXR5JgTywrQOl9M0l46K6jgZA_bTEA/exec';
+
+var CACHE = 'bpm-bundle-v1';
+function $(id){return document.getElementById(id)}
+function say(m,sub){$('msg').textContent=m;$('sub').textContent=sub||''}
+function bar(p){$('barI').style.width=Math.round(p*100)+'%'}
+function timeout(ms){return new Promise(function(_,rej){setTimeout(function(){rej(new Error('timeout'))},ms)})}
+
+if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(function(){})}
+// iPad に保存したデータを、iPad がかってに消さないようにたのむ
+try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
+
+function openBundle(html,offline){
+  var pre='<script>window.BPM_PWA=1;window.BPM_EXEC='+JSON.stringify(EXEC)+';'+(offline?'window.BPM_LAUNCH_OFFLINE=1;':'')+'<\/script>'+
+    '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">';
+  html=/<head[^>]*>/i.test(html)?html.replace(/<head[^>]*>/i,function(m){return m+pre}):pre+html; // <!DOCTYPE> より前には入れない
+  document.open();document.write(html);document.close();
+}
+function getCached(){
+  if(!('caches' in window))return Promise.resolve(null);
+  return caches.open(CACHE).then(function(c){return Promise.all([c.match('bundle'),c.match('bundle-ver')])}).then(function(a){
+    if(!a[0])return null;
+    return Promise.all([a[0].text(),a[1]?a[1].text():'']).then(function(t){return {html:t[0],ver:t[1]}});
+  }).catch(function(){return null});
+}
+function putCached(html,ver){
+  if(!('caches' in window))return Promise.resolve();
+  return caches.open(CACHE).then(function(c){return Promise.all([c.put('bundle',new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8'}})),c.put('bundle-ver',new Response(ver||''))])});
+}
+function fetchVer(){return Promise.race([fetch(EXEC+'?bundle=ver&t='+Date.now()).then(function(r){return r.json()}).then(function(j){return j.v||''}),timeout(15000)])}
+function fetchBundle(onProgress){
+  return Promise.race([fetch(EXEC+'?bundle=1&t='+Date.now()).then(function(r){
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    if(!r.body||!r.body.getReader)return r.text();
+    var reader=r.body.getReader(),chunks=[],got=0,dec=new TextDecoder();
+    function pump(){return reader.read().then(function(x){if(x.done)return chunks.join('')+dec.decode();got+=x.value.length;onProgress&&onProgress(Math.min(.97,got/3600000));chunks.push(dec.decode(x.value,{stream:true}));return pump()})}
+    return pump();
+  }),timeout(120000)]).then(function(html){
+    if(!/BPM_EXEC/.test(html)||html.length<100000)throw new Error('画面のデータがへんでした');
+    return html;
+  });
+}
+
+function boot(){
+  if(/ここに/.test(EXEC)){say('先生へ：このファイルの EXEC に、ぶっぽうまるのページのURLを入れてください','index.html の「var EXEC = …」の行');return}
+  getCached().then(function(c){
+    if(c){
+      // iPad に保存した画面ですぐひらく。つながっていれば、新しい画面があるか しらべて、あれば保存（次にひらいたときから新しくなる）
+      if(navigator.onLine!==false){
+        fetchVer().then(function(v){if(v&&v!==c.ver)return fetchBundle().then(function(h){return putCached(h,v)})}).catch(function(){});
+      }
+      openBundle(c.html,navigator.onLine===false);
+      return;
+    }
+    // はじめて：つながっていないと ひらけない
+    if(navigator.onLine===false){showFirstOffline();return}
+    say('はじめての じゅんびをしています…','画面のデータを iPad に保存しているよ（1分くらい）');
+    var ver='';
+    fetchVer().catch(function(){return ''}).then(function(v){ver=v;return fetchBundle(bar)}).then(function(h){bar(1);return putCached(h,ver).then(function(){return h})})
+      .then(function(h){say('じゅんびOK！','次からは、ネットがなくても このアイコンからひらけるよ');setTimeout(function(){openBundle(h,false)},900)})
+      .catch(function(e){showFirstOffline(e)});
+  });
+}
+function showFirstOffline(e){
+  say('はじめての1回は、インターネットにつながっている所（学校など）で ひらいてね','1回ひらいてログインしておけば、次からはネットがなくても使えるよ'+(e?'（'+(e.message||e)+'）':''));
+  var b=document.createElement('button');b.textContent='もう一度ためす';b.onclick=function(){location.reload()};$('box').appendChild(b);
+}
+boot();
+</script>
+</body>
+</html>
